@@ -1,33 +1,28 @@
 import { generateAltTexts, generateSEOContent } from "./ai.js";
-import { updateImageAlt, updateProductSEO, addProductTags, getProductMetafields } from "./shopify.js";
+import { updateImageAlt, updateProductSEO, addProductTags, isPublishedOnline } from "./shopify.js";
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// ─── Nouveau produit créé ─────────────────────────────────────────────────────
-// On ne fait RIEN ici — le produit est incomplet (photo fournisseur, pas de composition)
-// Tout se passe sur products/update quand la composition est renseignée
 export async function handleProductCreated(product) {
-  console.log(`\n🆕 Nouveau produit créé : "${product.title}" — en attente de la composition pour générer le SEO.`);
+  console.log(`\n🆕 Nouveau produit créé : "${product.title}" — en attente de la publication en ligne.`);
 }
 
-// ─── Produit mis à jour ───────────────────────────────────────────────────────
 export async function handleProductUpdated(product) {
   console.log(`\n♻️  Mise à jour : "${product.title}" (id: ${product.id})`);
 
-  // 1. Récupère les metafields
-  const metafields = await getProductMetafields(product.id);
+  // 1. Vérifie si le produit est publié sur "Boutique en ligne"
+  // published_at est renseigné uniquement quand le produit est actif sur au moins un canal
+  const isPublished = product.published_at !== null && product.published_at !== undefined;
 
-  // 2. Vérifie que la composition est renseignée — c'est le déclencheur
-  if (!metafields.composition || metafields.composition.trim() === "") {
-    console.log(`⏭️  Composition absente — SEO non généré. Renseigne "Composition et entretien" pour déclencher la génération.`);
+  if (!isPublished) {
+    console.log(`⏭️  Produit non publié en ligne — SEO non généré.`);
     return;
   }
 
-  // 3. Vérifie que la description est encore vide (pas déjà générée)
+  // 2. Vérifie que la description est encore vide (pas déjà générée)
   if (product.body_html && product.body_html.trim() !== "") {
-    console.log(`⏭️  Description déjà présente — rien à faire.`);
+    console.log(`⏭️  Description déjà présente — vérification des nouvelles photos...`);
 
-    // Par contre si de nouvelles photos ont été ajoutées récemment, on regénère les alt texts
     const hasNewImages = product.images?.some((img) => {
       const updatedAt = new Date(img.updated_at);
       const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
@@ -38,22 +33,20 @@ export async function handleProductUpdated(product) {
       console.log(`  🖼️  Nouvelles photos détectées — mise à jour des textes alt uniquement.`);
       await generateAndUpdateAltTexts(product);
     }
-
     return;
   }
 
-  // 4. Vérifie qu'il y a au moins une image (les vraies photos, pas juste une photo fournisseur)
+  // 3. Vérifie qu'il y a au moins une image
   if (!product.images || product.images.length === 0) {
-    console.log(`⏭️  Aucune image — SEO non généré. Ajoute les photos produit pour déclencher la génération.`);
+    console.log(`⏭️  Aucune image — SEO non généré.`);
     return;
   }
 
-  // ✅ Tout est là : composition renseignée + description vide + photos présentes
-  console.log(`✅ Déclenchement SEO : composition renseignée, description vide, ${product.images.length} photo(s) disponible(s).`);
-  await processProduct(product, metafields);
+  // ✅ Publié + description vide + photos = on génère tout
+  console.log(`✅ Déclenchement SEO : produit publié, description vide, ${product.images.length} photo(s).`);
+  await processProduct(product);
 }
 
-// ─── Génération des textes alt uniquement ────────────────────────────────────
 async function generateAndUpdateAltTexts(product) {
   try {
     const altResults = await generateAltTexts(product);
@@ -68,21 +61,17 @@ async function generateAndUpdateAltTexts(product) {
   }
 }
 
-// ─── Traitement complet : alt texts + description + meta + tags ───────────────
-async function processProduct(product, metafields) {
+async function processProduct(product) {
   const errors = [];
 
-  // 1. Textes alt
   await generateAndUpdateAltTexts(product);
 
-  // 2. Description + meta SEO + titre enrichi
   try {
-    const seoContent = await generateSEOContent(product, metafields);
+    const seoContent = await generateSEOContent(product, {});
     await delay(300);
     await updateProductSEO(product.id, seoContent);
     console.log("  📝 Description + meta SEO + titre mis à jour");
 
-    // 3. Tags longue traîne
     if (seoContent.keywords?.length > 0) {
       await delay(300);
       await addProductTags(product.id, product.tags, seoContent.keywords);

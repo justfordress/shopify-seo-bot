@@ -73,10 +73,10 @@ export async function handleProductUpdated(product) {
 async function generateAndUpdateAltTexts(product) {
   try {
     const altResults = await generateAltTexts(product);
-    for (const { imageId, altText } of altResults) {
+    for (const { imageId, altText, imageName } of altResults) {
       if (!altText) continue;
       await delay(300);
-      await updateImageAlt(product.id, imageId, altText);
+      await updateImageAlt(product.id, imageId, altText, imageName);
     }
     console.log(`  📷 ${altResults.filter((r) => r.altText).length} texte(s) alt mis à jour`);
   } catch (err) {

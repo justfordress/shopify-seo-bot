@@ -4,17 +4,6 @@ import { handleProductCreated, handleProductUpdated } from "./handlers.js";
 
 const app = express();
 
-// Vérifie que le webhook vient bien de Shopify
-function verifyShopifyWebhook(req, secret) {
-  const hmac = req.headers["x-shopify-hmac-sha256"];
-  if (!hmac) return false;
-  const hash = crypto
-    .createHmac("sha256", secret)
-    .update(req.body)
-    .digest("base64");
-  return crypto.timingSafeEqual(Buffer.from(hash), Buffer.from(hmac));
-}
-
 app.use(
   express.json({
     verify: (req, _res, buf) => {
@@ -23,13 +12,29 @@ app.use(
   })
 );
 
+// Vérifie que le webhook vient bien de Shopify
+function verifyShopifyWebhook(req, secret) {
+  try {
+    const hmac = req.headers["x-shopify-hmac-sha256"];
+    if (!hmac || !req.rawBody) return false;
+    const hash = crypto
+      .createHmac("sha256", secret)
+      .update(req.rawBody)
+      .digest("base64");
+    return crypto.timingSafeEqual(Buffer.from(hash), Buffer.from(hmac));
+  } catch (e) {
+    console.error("Erreur vérification HMAC:", e.message);
+    return false;
+  }
+}
+
 // Health check
 app.get("/", (_req, res) => res.json({ status: "ok", service: "shopify-seo-bot" }));
 
 // Webhook principal
 app.post("/webhook/product", async (req, res) => {
   const secret = process.env.SHOPIFY_WEBHOOK_SECRET;
-  if (secret && !verifyShopifyWebhook({ ...req, body: req.rawBody }, secret)) {
+  if (secret && !verifyShopifyWebhook(req, secret)) {
     console.warn("⚠️  Webhook invalide — signature incorrecte");
     return res.status(401).json({ error: "Unauthorized" });
   }

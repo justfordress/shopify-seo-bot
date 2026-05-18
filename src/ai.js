@@ -7,6 +7,10 @@ async function imageToBase64(url) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Image inaccessible : ${url}`);
   const buffer = await res.arrayBuffer();
+  const sizeInMB = buffer.byteLength / (1024 * 1024);
+  if (sizeInMB > 4) {
+    throw new Error(`Image trop lourde (${sizeInMB.toFixed(1)}MB > 4MB max)`);
+  }
   const contentType = res.headers.get("content-type") || "image/jpeg";
   return {
     base64: Buffer.from(buffer).toString("base64"),

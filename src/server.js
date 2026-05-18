@@ -4,6 +4,10 @@ import { handleProductCreated, handleProductUpdated } from "./handlers.js";
 
 const app = express();
 
+const CLIENT_ID = process.env.SHOPIFY_CLIENT_ID;
+const CLIENT_SECRET = process.env.SHOPIFY_CLIENT_SECRET;
+const SHOPIFY_DOMAIN = process.env.SHOPIFY_DOMAIN;
+
 app.use(
   express.json({
     verify: (req, _res, buf) => {
@@ -12,34 +16,60 @@ app.use(
   })
 );
 
-// Vérifie que le webhook vient bien de Shopify
+// Health check
+app.get("/", (_req, res) => res.json({ status: "ok", service: "shopify-seo-bot" }));
+
+// OAuth callback — récupère le token shpat_ et l'affiche
+app.get("/auth/callback", async (req, res) => {
+  const { code, shop } = req.query;
+  if (!code || !shop) return res.status(400).send("Paramètres manquants");
+
+  try {
+    const response = await fetch(`https://${shop}/admin/oauth/access_token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        client_id: CLIENT_ID,
+        client_secret: CLIENT_SECRET,
+        code,
+      }),
+    });
+
+    const data = await response.json();
+    const token = data.access_token;
+
+    if (!token) return res.status(400).send(`Erreur: ${JSON.stringify(data)}`);
+
+    // Affiche le token pour le copier dans Railway
+    res.send(`
+      <h1>✅ Token obtenu !</h1>
+      <p>Copie ce token et mets-le dans Railway comme SHOPIFY_ACCESS_TOKEN :</p>
+      <code style="font-size:18px;background:#eee;padding:10px;display:block">${token}</code>
+    `);
+  } catch (err) {
+    res.status(500).send(`Erreur: ${err.message}`);
+  }
+});
+
+// Webhook Shopify — vérifie la signature
 function verifyShopifyWebhook(req, secret) {
   try {
     const hmac = req.headers["x-shopify-hmac-sha256"];
     if (!hmac || !req.rawBody) return false;
-    const hash = crypto
-      .createHmac("sha256", secret)
-      .update(req.rawBody)
-      .digest("base64");
+    const hash = crypto.createHmac("sha256", secret).update(req.rawBody).digest("base64");
     return crypto.timingSafeEqual(Buffer.from(hash), Buffer.from(hmac));
   } catch (e) {
-    console.error("Erreur vérification HMAC:", e.message);
     return false;
   }
 }
 
-// Health check
-app.get("/", (_req, res) => res.json({ status: "ok", service: "shopify-seo-bot" }));
-
-// Webhook principal
 app.post("/webhook/product", async (req, res) => {
   const secret = process.env.SHOPIFY_WEBHOOK_SECRET;
   if (secret && !verifyShopifyWebhook(req, secret)) {
-    console.warn("⚠️  Webhook invalide — signature incorrecte");
+    console.warn("⚠️  Webhook invalide");
     return res.status(401).json({ error: "Unauthorized" });
   }
 
-  // Répondre immédiatement à Shopify (délai max 5s sinon retry)
   res.status(200).json({ received: true });
 
   const product = req.body;
@@ -47,13 +77,10 @@ app.post("/webhook/product", async (req, res) => {
   console.log(`📦 Webhook reçu : ${topic} — produit "${product.title}"`);
 
   try {
-    if (topic === "products/create") {
-      await handleProductCreated(product);
-    } else if (topic === "products/update") {
-      await handleProductUpdated(product);
-    }
+    if (topic === "products/create") await handleProductCreated(product);
+    else if (topic === "products/update") await handleProductUpdated(product);
   } catch (err) {
-    console.error("❌ Erreur traitement webhook :", err.message);
+    console.error("❌ Erreur :", err.message);
   }
 });
 

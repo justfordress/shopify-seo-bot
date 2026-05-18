@@ -1,16 +1,24 @@
-import Anthropic from "@anthropic-ai/sdk";
+/**
+ * Appels à l'API Claude pour la génération de contenu SEO.
+ */
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const CLAUDE_API = "https://api.anthropic.com/v1/messages";
+const MODEL = "claude-opus-4-5-20251101"; // Meilleur modèle pour la qualité rédactionnelle
 
-// Télécharge une image et la convertit en base64
+// ── Utilitaire : télécharge une image et la convertit en base64 ──────────────
 async function imageToBase64(url) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Image inaccessible : ${url}`);
+
   const buffer = await res.arrayBuffer();
   const sizeInMB = buffer.byteLength / (1024 * 1024);
+
   if (sizeInMB > 4) {
-    throw new Error(`Image trop lourde (${sizeInMB.toFixed(1)}MB > 4MB max)`);
+    throw new Error(
+      `Image trop lourde (${sizeInMB.toFixed(1)}MB > 4MB max) — ignorée`
+    );
   }
+
   const contentType = res.headers.get("content-type") || "image/jpeg";
   return {
     base64: Buffer.from(buffer).toString("base64"),
@@ -18,166 +26,148 @@ async function imageToBase64(url) {
   };
 }
 
-// ─── Génère les textes alt pour toutes les images d'un produit ───────────────
-export async function generateAltTexts(product) {
-  const images = product.images || [];
-  if (images.length === 0) return [];
+// ── Appel générique à l'API Anthropic ────────────────────────────────────────
+async function callClaude(messages, maxTokens = 500) {
+  const res = await fetch(CLAUDE_API, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": process.env.ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: MODEL,
+      max_tokens: maxTokens,
+      messages,
+    }),
+  });
 
-  console.log(`🖼️  Génération des textes alt pour ${images.length} image(s)...`);
-  const results = [];
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Claude API error ${res.status}: ${err}`);
+  }
 
-  for (const image of images) {
-    try {
-      const { base64, mediaType } = await imageToBase64(image.src);
+  const data = await res.json();
+  return data.content[0].text;
+}
 
-      const response = await client.messages.create({
-        model: "claude-opus-4-5",
-        max_tokens: 200,
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "image",
-                source: { type: "base64", media_type: mediaType, data: base64 },
-              },
-              {
-                type: "text",
-                text: `Tu es un expert SEO e-commerce spécialisé en mode/vêtements.
-Génère UN texte alt SEO pour cette image produit.
+// ── 1. Génération d'un texte alt pour une image ───────────────────────────────
+export async function generateAltTexts(imageUrl, productTitle, composition) {
+  const imageData = await imageToBase64(imageUrl);
 
-Contexte produit : "${product.title}"${product.product_type ? ` — Type : ${product.product_type}` : ""}
+  const text = await callClaude([
+    {
+      role: "user",
+      content: [
+        {
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: imageData.mediaType,
+            data: imageData.base64,
+          },
+        },
+        {
+          type: "text",
+          text: `Tu es un expert SEO e-commerce mode.
+Génère un texte alt SEO pour cette image produit.
 
-Règles strictes :
-- Maximum 125 caractères
-- Commence par le type de vêtement et ses caractéristiques visuelles clés (couleur, matière, coupe si visible)
-- Intègre 1-2 mots-clés longue traîne naturellement (ex: "robe bohème fleurie été femme")
-- Ne commence jamais par "Image de" ou "Photo de"
+Produit : "${productTitle}"
+Composition : ${composition}
+
+Règles :
+- 80-120 caractères maximum
+- Décris visuellement le produit (couleur, forme, style, matière visible)
+- Inclus 1-2 mots-clés naturels (type de vêtement, couleur, occasion)
+- Pas de "image de", "photo de" — commence directement par la description
 - En français
 
 Réponds UNIQUEMENT avec le texte alt, sans guillemets ni ponctuation finale.`,
-              },
-            ],
-          },
-        ],
-      });
+        },
+      ],
+    },
+  ]);
 
-      const altText = response.content[0].text.trim().slice(0, 125);
-      results.push({ imageId: image.id, altText });
-      console.log(`  ✅ Image ${image.id} : "${altText}"`);
-    } catch (err) {
-      console.error(`  ❌ Image ${image.id} : ${err.message}`);
-      results.push({ imageId: image.id, altText: null });
-    }
-  }
-
-  return results;
+  return text.trim();
 }
 
-// ─── Génère description HTML + meta title + meta description ─────────────────
-// metafields : { composition, conseil_taille, ... } récupérés depuis Shopify
-export async function generateSEOContent(product, metafields = {}) {
-  console.log(`✍️  Génération du contenu SEO pour "${product.title}"...`);
-
-  // On envoie toutes les images disponibles (max 4) pour que l'IA voie bien le produit
-  const images = (product.images || []).slice(0, 4);
-  const messageContent = [];
-
-  for (const img of images) {
-    try {
-      const { base64, mediaType } = await imageToBase64(img.src);
-      messageContent.push({
-        type: "image",
-        source: { type: "base64", media_type: mediaType, data: base64 },
-      });
-    } catch {
-      console.warn(`  ⚠️  Image ignorée : ${img.src}`);
-    }
+// ── 2. Génération du contenu SEO complet ─────────────────────────────────────
+export async function generateSEOContent({ title, composition, imageUrl }) {
+  // On inclut l'image pour que l'IA ait le contexte visuel
+  let imageBlock = null;
+  try {
+    const imageData = await imageToBase64(imageUrl);
+    imageBlock = {
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: imageData.mediaType,
+        data: imageData.base64,
+      },
+    };
+  } catch (e) {
+    console.warn(`  ⚠️  Image non chargée pour le contenu SEO : ${e.message}`);
   }
 
-  // Contexte produit depuis Shopify
-  const variants = product.variants || [];
-  const colors = [...new Set(variants.map((v) => v.option1).filter(Boolean))];
-  const sizes  = [...new Set(variants.map((v) => v.option2).filter(Boolean))];
-  const price  = variants[0]?.price;
+  const contentBlocks = [
+    ...(imageBlock ? [imageBlock] : []),
+    {
+      type: "text",
+      text: `Tu es un expert SEO e-commerce spécialisé dans la mode femme haut de gamme.
+Génère le contenu SEO complet pour ce produit Shopify.
 
-  // Blocs contextuels conditionnels — on n'invente rien si l'info manque
-  const compositionBlock = metafields.composition
-    ? `- Composition & entretien : ${metafields.composition}`
-    : "- Composition : non renseignée (ne pas l'inventer)";
+Produit : "${title}"
+Composition et entretien : ${composition}
 
-  const tailleBlock = metafields.conseil_taille
-    ? `- Conseil de taille : ${metafields.conseil_taille}`
-    : "- Conseil de taille : non renseigné (ne pas l'inventer)";
+DESCRIPTION HTML (body_html) :
+- 300-400 mots
+- Structure HTML avec <p>, <ul>, <li> uniquement (pas de <h1>/<h2>)
+- Commence par une accroche émotionnelle sur le style/la silhouette
+- Paragraphe sur le confort et le tombé du tissu (basé sur la composition)
+- Liste <ul> de 4-5 points forts du produit
+- Paragraphe conseils de style / occasions (comment le porter)
+- Paragraphe entretien (basé sur la composition, discret en fin)
+- Ne mentionne PAS le guide des tailles (affiché ailleurs sur la page)
+- Ton : élégant, féminin, chaleureux — comme une styliste qui conseille
+- Intègre 3-4 mots-clés longue traîne naturellement (type de pièce + occasion/saison/matière)
 
-  // Autres metafields éventuels (décolleté, longueur, etc.)
-  const extraFields = Object.entries(metafields)
-    .filter(([k]) => !["composition", "conseil_taille"].includes(k))
-    .map(([k, v]) => `- ${k} : ${v}`)
-    .join("\n");
+META TITLE :
+- 55-60 caractères max
+- Format : "[Nom produit] - [bénéfice ou mot-clé]"
 
-  messageContent.push({
-    type: "text",
-    text: `Tu es un expert SEO e-commerce et rédacteur mode pour "Just for Dress", boutique française de robes et vêtements féminins.
+META DESCRIPTION :
+- 150-160 caractères max
+- Incite au clic, mentionne la matière et l'occasion
 
-Génère le contenu SEO complet pour ce produit à partir des photos ET des informations ci-dessous.
+SEO_TITLE (titre enrichi produit) :
+- Format : "[Nom produit] - [description courte 4-5 mots]"
+- Max 70 caractères
+- Ex: "Robe Marie - Robe fleurie en viscose légère"
 
-━━ INFORMATIONS PRODUIT ━━
-- Nom : "${product.title}"
-- Type : ${product.product_type || "Vêtement"}
-- Prix : ${price ? price + " €" : "non précisé"}
-- Couleurs disponibles : ${colors.length ? colors.join(", ") : "voir les photos"}
-- Tailles disponibles : ${sizes.length ? sizes.join(", ") : "non précisées"}
-${compositionBlock}
-${tailleBlock}${extraFields ? "\n" + extraFields : ""}
-
-━━ INSTRUCTIONS ━━
-1. Analyse les photos pour décrire avec précision la coupe, la couleur, les détails (col, manches, ceinture, imprimé, etc.)
-2. Trouve 3-5 mots-clés longue traîne à fort potentiel SEO (intention d'achat réelle, ex: "robe chemise fleurie midi été")
-3. Génère un titre SEO enrichi : reprend le nom du produit suivi d'un tiret et d'une courte description longue traîne (ex: "Robe Marie - Robe courte avec broderie anglaise"). Maximum 70 caractères.
-4. Rédige une description HTML (350-500 mots) avec les mots-clés intégrés naturellement
-5. Génère un meta title (55-60 car. max) et une meta description (150-160 car. max)
-
-━━ STRUCTURE DESCRIPTION HTML ━━
-① <p> Accroche émotionnelle — style, tendance, sentiment (2-3 phrases)
-② <p> Description visuelle précise issue des photos — coupe, couleur, détails (ce que l'IA voit vraiment)
-③ <ul><li> 4-6 caractéristiques clés (bullet points)
-④ <p> Composition & entretien — UNIQUEMENT si renseignée, mot pour mot, sans reformuler. OMISE si non renseignée.
-⑤ <p> Occasions de port avec mots-clés longue traîne intégrés naturellement
-⑥ <p> Appel à l'action court
-
-NE PAS inclure le conseil de taille dans la description — il est affiché séparément sur la fiche produit.
-Balises HTML autorisées : <p>, <ul>, <li>, <strong>. Rien d'autre.
-Ton : féminin, inspirant, accessible. Pas de superlatifs creux ("incroyable", "parfait").
-Langue : français.
-
-━━ FORMAT DE RÉPONSE ━━
-UNIQUEMENT du JSON valide, sans markdown, sans backticks, sans texte avant ou après :
+Réponds UNIQUEMENT en JSON valide, sans Markdown, sans backticks :
 {
-  "keywords": ["mot-clé longue traîne 1", "mot-clé 2", "mot-clé 3"],
-  "seo_title": "Robe Marie - Robe courte avec broderie anglaise",
-  "description_html": "<p>...</p><ul>...</ul>...",
+  "description_html": "...",
   "meta_title": "...",
-  "meta_description": "..."
+  "meta_description": "...",
+  "seo_title": "..."
 }`,
-  });
+    },
+  ];
 
-  const response = await client.messages.create({
-    model: "claude-opus-4-5",
-    max_tokens: 2000,
-    messages: [{ role: "user", content: messageContent }],
-  });
+  const raw = await callClaude(
+    [{ role: "user", content: contentBlocks }],
+    1500
+  );
 
-  const raw   = response.content[0].text.trim();
+  // Nettoyage JSON (parfois le modèle ajoute des backticks)
   const clean = raw.replace(/```json|```/g, "").trim();
 
   try {
     const parsed = JSON.parse(clean);
-    console.log(`  ✅ Keywords : ${parsed.keywords?.join(", ")}`);
-    console.log(`  ✅ Titre SEO : "${parsed.seo_title}"`);
     console.log(`  ✅ Meta title (${parsed.meta_title?.length} car.) : "${parsed.meta_title}"`);
+    console.log(`  ✅ SEO title : "${parsed.seo_title}"`);
     return parsed;
-  } catch {
-    throw new Error("Réponse IA invalide (JSON malformé)");
+  } catch (e) {
+    throw new Error(`JSON invalide reçu de Claude : ${e.message}\n${clean}`);
   }
 }

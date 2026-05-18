@@ -10,39 +10,31 @@ export async function handleProductCreated(product) {
 export async function handleProductUpdated(product) {
   console.log(`\n♻️  Mise à jour : "${product.title}" (id: ${product.id})`);
 
-  // 1. Vérifie si le produit est publié sur "Boutique en ligne"
-  // published_at est renseigné uniquement quand le produit est actif sur au moins un canal
   const isPublished = product.published_at !== null && product.published_at !== undefined;
-
   if (!isPublished) {
-    console.log(`⏭️  Produit non publié en ligne — SEO non généré.`);
+    console.log(`⏭️  Produit non publié — SEO non généré.`);
     return;
   }
 
-  // 2. Vérifie que la description est encore vide (pas déjà générée)
   if (product.body_html && product.body_html.trim() !== "") {
     console.log(`⏭️  Description déjà présente — vérification des nouvelles photos...`);
-
     const hasNewImages = product.images?.some((img) => {
       const updatedAt = new Date(img.updated_at);
       const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
       return updatedAt > fiveMinutesAgo;
     });
-
     if (hasNewImages) {
-      console.log(`  🖼️  Nouvelles photos détectées — mise à jour des textes alt uniquement.`);
+      console.log(`  🖼️  Nouvelles photos — mise à jour des textes alt uniquement.`);
       await generateAndUpdateAltTexts(product);
     }
     return;
   }
 
-  // 3. Vérifie qu'il y a au moins une image
   if (!product.images || product.images.length === 0) {
     console.log(`⏭️  Aucune image — SEO non généré.`);
     return;
   }
 
-  // ✅ Publié + description vide + photos = on génère tout
   console.log(`✅ Déclenchement SEO : produit publié, description vide, ${product.images.length} photo(s).`);
   await processProduct(product);
 }

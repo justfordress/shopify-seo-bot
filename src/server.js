@@ -1,11 +1,10 @@
 import express from "express";
 import crypto from "crypto";
-import { handleProductUpdate } from "./handlers.js";
+import { handleProductCreated, handleProductUpdated } from "./handlers.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Shopify envoie le body brut — on doit le capturer avant le parsing JSON
 app.use(
   express.json({
     verify: (req, _res, buf) => {
@@ -14,40 +13,39 @@ app.use(
   })
 );
 
-// Vérifie la signature HMAC du webhook Shopify
-function verifyWebhook(req) {
-  const hmac = req.headers["x-shopify-hmac-sha256"];
-  if (!hmac || !process.env.SHOPIFY_WEBHOOK_SECRET) return false;
-  const digest = crypto
-    .createHmac("sha256", process.env.SHOPIFY_WEBHOOK_SECRET)
-    .update(req.rawBody)
-    .digest("base64");
-  return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(hmac));
+function verifyShopifyWebhook(req, secret) {
+  try {
+    const hmac = req.headers["x-shopify-hmac-sha256"];
+    if (!hmac || !req.rawBody) return false;
+    const hash = crypto.createHmac("sha256", secret).update(req.rawBody).digest("base64");
+    return crypto.timingSafeEqual(Buffer.from(hash), Buffer.from(hmac));
+  } catch (e) {
+    return false;
+  }
 }
 
-// Route principale — reçoit tous les webhooks Shopify
-app.post("/webhook", async (req, res) => {
-  if (!verifyWebhook(req)) {
-    console.warn("❌ Webhook non authentifié — ignoré");
-    return res.status(401).send("Unauthorized");
+app.get("/", (_req, res) => res.json({ status: "ok", service: "shopify-seo-bot" }));
+
+// Même URL qu'avant : /webhook/product
+app.post("/webhook/product", async (req, res) => {
+  const secret = process.env.SHOPIFY_WEBHOOK_SECRET;
+  if (secret && !verifyShopifyWebhook(req, secret)) {
+    console.warn("⚠️  Webhook invalide");
+    return res.status(401).json({ error: "Unauthorized" });
   }
 
-  const topic = req.headers["x-shopify-topic"];
+  res.status(200).json({ received: true });
+
   const product = req.body;
+  const topic = req.headers["x-shopify-topic"];
+  console.log(`📦 Webhook reçu : ${topic} — produit "${product.title}"`);
 
-  console.log(`\n📦 Webhook reçu : ${topic} — produit "${product.title}"`);
-
-  // On répond immédiatement à Shopify (délai max 5s)
-  res.status(200).send("OK");
-
-  // Traitement asynchrone
   try {
-    await handleProductUpdate(product, topic);
+    if (topic === "products/create") await handleProductCreated(product);
+    else if (topic === "products/update") await handleProductUpdated(product);
   } catch (err) {
-    console.error("💥 Erreur globale :", err.message);
+    console.error("❌ Erreur :", err.message);
   }
 });
-
-app.get("/", (_req, res) => res.send("SEO Bot actif ✅"));
 
 app.listen(PORT, () => console.log(`🚀 SEO Bot démarré sur le port ${PORT}`));

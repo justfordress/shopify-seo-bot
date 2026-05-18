@@ -1,82 +1,100 @@
 import { generateAltTexts, generateSEOContent } from "./ai.js";
-import { updateImageAlt, updateProductSEO, addProductTags } from "./shopify.js";
+import { updateProductSEO, setImageAltText } from "./shopify.js";
 
-const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+// ── Anti-boucle : cooldown de 5 min par produit ──────────────────────────────
+// Quand le bot met à jour Shopify, Shopify envoie un nouveau webhook products/update.
+// On ignore ces webhooks "en retour" grâce à ce cooldown.
+const recentlyProcessed = new Map();
+const COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
 
-export async function handleProductCreated(product) {
-  console.log(`\n🆕 Nouveau produit créé : "${product.title}" — en attente de la publication en ligne.`);
+function isOnCooldown(productId) {
+  const last = recentlyProcessed.get(String(productId));
+  if (!last) return false;
+  return Date.now() - last < COOLDOWN_MS;
 }
 
-export async function handleProductUpdated(product) {
-  console.log(`\n♻️  Mise à jour : "${product.title}" (id: ${product.id})`);
-
-  const isPublished = product.published_at !== null && product.published_at !== undefined;
-  if (!isPublished) {
-    console.log(`⏭️  Produit non publié — SEO non généré.`);
-    return;
-  }
-
-  if (product.body_html && product.body_html.trim() !== "") {
-    console.log(`⏭️  Description déjà présente — vérification des nouvelles photos...`);
-    const hasNewImages = product.images?.some((img) => {
-      const updatedAt = new Date(img.updated_at);
-      const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
-      return updatedAt > fiveMinutesAgo;
-    });
-    if (hasNewImages) {
-      console.log(`  🖼️  Nouvelles photos — mise à jour des textes alt uniquement.`);
-      await generateAndUpdateAltTexts(product);
-    }
-    return;
-  }
-
-  if (!product.images || product.images.length === 0) {
-    console.log(`⏭️  Aucune image — SEO non généré.`);
-    return;
-  }
-
-  console.log(`✅ Déclenchement SEO : produit publié, description vide, ${product.images.length} photo(s).`);
-  await processProduct(product);
-}
-
-async function generateAndUpdateAltTexts(product) {
-  try {
-    const altResults = await generateAltTexts(product);
-    for (const { imageId, altText } of altResults) {
-      if (!altText) continue;
-      await delay(300);
-      await updateImageAlt(product.id, imageId, altText);
-    }
-    console.log(`  📷 ${altResults.filter((r) => r.altText).length} texte(s) alt mis à jour`);
-  } catch (err) {
-    console.error("  ❌ Erreur textes alt :", err.message);
+function markAsProcessed(productId) {
+  recentlyProcessed.set(String(productId), Date.now());
+  // Nettoyage mémoire : purge les entrées expirées
+  for (const [id, ts] of recentlyProcessed) {
+    if (Date.now() - ts > COOLDOWN_MS) recentlyProcessed.delete(id);
   }
 }
 
-async function processProduct(product) {
-  const errors = [];
+/**
+ * Point d'entrée principal.
+ * Déclenchement UNIQUEMENT si le metafield "Composition et entretien" est rempli.
+ * Les metafields arrivent dans le payload webhook directement.
+ */
+export async function handleProductUpdate(product, topic) {
+  const productId = product.id;
+  const productTitle = product.title;
 
-  await generateAndUpdateAltTexts(product);
+  // ── 0. Anti-boucle ──────────────────────────────────────────────────────────
+  if (isOnCooldown(productId)) {
+    console.log(`🔄 "${productTitle}" ignoré — cooldown actif (mis à jour par le bot)`);
+    return;
+  }
 
-  try {
-    const seoContent = await generateSEOContent(product, {});
-    await delay(300);
-    await updateProductSEO(product.id, seoContent);
-    console.log("  📝 Description + meta SEO + titre mis à jour");
+  // ── 1. Extraction des metafields depuis le payload webhook ──────────────────
+  const metafields = product.metafields || [];
 
-    if (seoContent.keywords?.length > 0) {
-      await delay(300);
-      await addProductTags(product.id, product.tags, seoContent.keywords);
-      console.log(`  🏷️  Tags ajoutés : ${seoContent.keywords.join(", ")}`);
+  const compositionField = metafields.find(
+    (m) =>
+      m.key === "composition_et_entretien" ||
+      m.key === "composition" ||
+      (m.namespace === "custom" && m.key.includes("composition"))
+  );
+
+  const compositionValue = compositionField?.value?.trim();
+
+  // ── 2. Condition de déclenchement ───────────────────────────────────────────
+  if (!compositionValue) {
+    console.log(`⏭️  "${productTitle}" ignoré — Composition et entretien vide (${metafields.length} metafield(s) reçu(s))`);
+    return;
+  }
+
+  console.log(`✅ Composition détectée : "${compositionValue.substring(0, 60)}..."`);
+
+  // ── 3. Récupération des images ──────────────────────────────────────────────
+  const images = product.images || [];
+  if (images.length === 0) {
+    console.log(`⚠️  Pas d'image sur "${productTitle}" — annulé`);
+    return;
+  }
+
+  console.log(`🖼️  ${images.length} image(s) trouvée(s)`);
+
+  // On marque MAINTENANT pour bloquer les webhooks en retour dès qu'on commence
+  markAsProcessed(productId);
+
+  // ── 4. Génération des textes alt ────────────────────────────────────────────
+  console.log(`\n🤖 Génération des textes alt...`);
+  for (const image of images) {
+    try {
+      const altText = await generateAltTexts(image.src, productTitle, compositionValue);
+      await setImageAltText(productId, image.id, altText);
+      console.log(`  ✅ Image ${image.id} : "${altText}"`);
+    } catch (err) {
+      console.warn(`  ⚠️  Image ${image.id} ignorée : ${err.message}`);
     }
-  } catch (err) {
-    errors.push(`SEO content : ${err.message}`);
-    console.error("  ❌ Erreur SEO content :", err.message);
   }
 
-  if (errors.length === 0) {
-    console.log(`✨ Produit "${product.title}" entièrement optimisé !\n`);
-  } else {
-    console.warn(`⚠️  Produit "${product.title}" traité avec ${errors.length} erreur(s) :`, errors);
-  }
+  // ── 5. Génération du contenu SEO ────────────────────────────────────────────
+  console.log(`\n✍️  Génération du contenu SEO...`);
+
+  const context = {
+    title: productTitle,
+    composition: compositionValue,
+    imageUrl: images[0]?.src,
+  };
+
+  const seoContent = await generateSEOContent(context);
+
+  // ── 6. Mise à jour Shopify ──────────────────────────────────────────────────
+  await updateProductSEO(productId, seoContent);
+
+  console.log(`\n✨ Produit "${productTitle}" entièrement optimisé !`);
+  console.log(`   Titre SEO : ${seoContent.meta_title}`);
+  console.log(`   Meta desc : ${seoContent.meta_description?.substring(0, 60)}...`);
 }

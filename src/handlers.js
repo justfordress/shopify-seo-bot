@@ -2,10 +2,8 @@ import { generateAltTexts, generateSEOContent } from "./ai.js";
 import { updateProductSEO, setImageAltText } from "./shopify.js";
 
 // ── Anti-boucle : cooldown de 5 min par produit ──────────────────────────────
-// Quand le bot met à jour Shopify, Shopify envoie un nouveau webhook products/update.
-// On ignore ces webhooks "en retour" grâce à ce cooldown.
 const recentlyProcessed = new Map();
-const COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
+const COOLDOWN_MS = 5 * 60 * 1000;
 
 function isOnCooldown(productId) {
   const last = recentlyProcessed.get(String(productId));
@@ -15,16 +13,14 @@ function isOnCooldown(productId) {
 
 function markAsProcessed(productId) {
   recentlyProcessed.set(String(productId), Date.now());
-  // Nettoyage mémoire : purge les entrées expirées
   for (const [id, ts] of recentlyProcessed) {
     if (Date.now() - ts > COOLDOWN_MS) recentlyProcessed.delete(id);
   }
 }
 
 /**
- * Point d'entrée principal.
- * Déclenchement UNIQUEMENT si le metafield "Composition et entretien" est rempli.
- * Les metafields arrivent dans le payload webhook directement.
+ * Déclenchement : produit publié sur le canal "Boutique en ligne"
+ * = webhook products/update avec published_at non null
  */
 export async function handleProductUpdate(product, topic) {
   const productId = product.id;
@@ -36,27 +32,27 @@ export async function handleProductUpdate(product, topic) {
     return;
   }
 
-  // ── 1. Extraction des metafields depuis le payload webhook ──────────────────
-  const metafields = product.metafields || [];
-
-  const compositionField = metafields.find(
-    (m) =>
-      m.key === "composition_et_entretien" ||
-      m.key === "composition" ||
-      (m.namespace === "custom" && m.key.includes("composition"))
-  );
-
-  const compositionValue = compositionField?.value?.trim();
-
-  // ── 2. Condition de déclenchement ───────────────────────────────────────────
-  if (!compositionValue) {
-    console.log(`⏭️  "${productTitle}" ignoré — Composition et entretien vide (${metafields.length} metafield(s) reçu(s))`);
+  // ── 1. Condition de déclenchement : publié sur boutique en ligne ─────────────
+  // published_at est null si le produit est en brouillon / non publié
+  if (!product.published_at) {
+    console.log(`⏭️  "${productTitle}" ignoré — produit non publié (published_at null)`);
     return;
   }
 
-  console.log(`✅ Composition détectée : "${compositionValue.substring(0, 60)}..."`);
+  // On vérifie que c'est bien une NOUVELLE publication et pas juste une modif
+  // En comparant published_at et updated_at (moins de 60 secondes d'écart = vient d'être publié)
+  const publishedAt = new Date(product.published_at).getTime();
+  const updatedAt = new Date(product.updated_at).getTime();
+  const diffSeconds = Math.abs(updatedAt - publishedAt) / 1000;
 
-  // ── 3. Récupération des images ──────────────────────────────────────────────
+  if (diffSeconds > 60) {
+    console.log(`⏭️  "${productTitle}" ignoré — déjà publié depuis ${Math.round(diffSeconds)}s (pas une nouvelle publication)`);
+    return;
+  }
+
+  console.log(`✅ Nouvelle publication détectée pour "${productTitle}"`);
+
+  // ── 2. Récupération des images ──────────────────────────────────────────────
   const images = product.images || [];
   if (images.length === 0) {
     console.log(`⚠️  Pas d'image sur "${productTitle}" — annulé`);
@@ -65,8 +61,22 @@ export async function handleProductUpdate(product, topic) {
 
   console.log(`🖼️  ${images.length} image(s) trouvée(s)`);
 
-  // On marque MAINTENANT pour bloquer les webhooks en retour dès qu'on commence
+  // Marque immédiatement pour bloquer les webhooks en retour
   markAsProcessed(productId);
+
+  // ── 3. Contexte : composition depuis les metafields si dispo ─────────────────
+  const metafields = product.metafields || [];
+  const compositionField = metafields.find(
+    (m) => m.key === "composition_et_entretien" || m.key === "composition" ||
+      (m.namespace === "custom" && m.key.includes("composition"))
+  );
+  const compositionValue = compositionField?.value?.trim() || "";
+
+  if (compositionValue) {
+    console.log(`📋 Composition : "${compositionValue.substring(0, 60)}..."`);
+  } else {
+    console.log(`📋 Pas de composition dans le webhook — génération sans ce contexte`);
+  }
 
   // ── 4. Génération des textes alt ────────────────────────────────────────────
   console.log(`\n🤖 Génération des textes alt...`);

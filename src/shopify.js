@@ -20,12 +20,9 @@ async function restFetch(path, method = "GET", body = null) {
   return res.json();
 }
 
-// Met à jour le texte alt ET le nom affiché de l'image
-export async function updateImageAlt(productId, imageId, altText, imageName = null) {
-  const payload = { id: imageId, alt: altText };
-  if (imageName) payload.name = imageName;
+export async function updateImageAlt(productId, imageId, altText) {
   return restFetch(`/products/${productId}/images/${imageId}.json`, "PUT", {
-    image: payload,
+    image: { id: imageId, alt: altText },
   });
 }
 

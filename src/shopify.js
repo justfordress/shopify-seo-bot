@@ -2,7 +2,7 @@
 
 const SHOPIFY_DOMAIN = process.env.SHOPIFY_DOMAIN; // ex: ma-boutique.myshopify.com
 const SHOPIFY_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
-const API_VERSION = "2024-10";
+const API_VERSION = "2026-04";
 
 function shopifyFetch(path, method = "GET", body = null) {
   const url = `https://${SHOPIFY_DOMAIN}/admin/api/${API_VERSION}${path}`;

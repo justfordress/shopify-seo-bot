@@ -44,27 +44,44 @@ export async function generateAltTexts(product) {
               {
                 type: "text",
                 text: `Tu es un expert SEO e-commerce spécialisé en mode/vêtements.
-Génère UN texte alt SEO pour cette image produit.
+Génère le texte alt SEO ET un nom de fichier SEO pour cette image produit.
 
 Contexte produit : "${product.title}"${product.product_type ? ` — Type : ${product.product_type}` : ""}
 
-Règles strictes :
+Règles texte alt :
 - Maximum 125 caractères
 - Commence par le type de vêtement et ses caractéristiques visuelles clés (couleur, matière, coupe si visible)
 - Intègre 1-2 mots-clés longue traîne naturellement (ex: "robe bohème fleurie été femme")
 - Ne commence jamais par "Image de" ou "Photo de"
 - En français
 
-Réponds UNIQUEMENT avec le texte alt, sans guillemets ni ponctuation finale.`,
+Règles nom de fichier :
+- 4-6 mots séparés par des tirets
+- Uniquement des minuscules, pas d'accents, pas de caractères spéciaux
+- Descriptif et SEO (ex: "robe-boheme-fleurie-ete-femme")
+- Sans extension
+
+Réponds UNIQUEMENT en JSON valide sans markdown :
+{"alt": "texte alt ici", "name": "nom-du-fichier-ici"}`,
               },
             ],
           },
         ],
       });
 
-      const altText = response.content[0].text.trim().slice(0, 125);
-      results.push({ imageId: image.id, altText });
+      const raw = response.content[0].text.trim();
+      let altText = raw;
+      let imageName = null;
+      try {
+        const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
+        altText = parsed.alt?.slice(0, 125) || raw.slice(0, 125);
+        imageName = parsed.name || null;
+      } catch {
+        altText = raw.slice(0, 125);
+      }
+      results.push({ imageId: image.id, altText, imageName });
       console.log(`  ✅ Image ${image.id} : "${altText}"`);
+      if (imageName) console.log(`     📛 Nom : "${imageName}"`);
     } catch (err) {
       console.error(`  ❌ Image ${image.id} : ${err.message}`);
       results.push({ imageId: image.id, altText: null });

@@ -1,5 +1,5 @@
 import { generateAltTexts, generateSEOContent } from "./ai.js";
-import { updateImageAlt, updateProductSEO, addProductTags, isPublishedOnline } from "./shopify.js";
+import { updateImageAlt, updateProductSEO, addProductTags } from "./shopify.js";
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 

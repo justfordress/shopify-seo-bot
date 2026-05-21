@@ -3,6 +3,22 @@ import { updateImageAlt, updateProductSEO, addProductTags } from "./shopify.js";
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// ── Anti-boucle ──────────────────────────────────────────────────────────────
+const cooldowns = new Map();
+const COOLDOWN_MS = 5 * 60 * 1000;
+
+function isOnCooldown(productId) {
+  const last = cooldowns.get(String(productId));
+  return last ? Date.now() - last < COOLDOWN_MS : false;
+}
+
+function setCooldown(productId) {
+  cooldowns.set(String(productId), Date.now());
+  for (const [id, ts] of cooldowns) {
+    if (Date.now() - ts > COOLDOWN_MS) cooldowns.delete(id);
+  }
+}
+
 export async function handleProductCreated(product) {
   console.log(`\n🆕 Nouveau produit créé : "${product.title}" — en attente de la publication en ligne.`);
 }
@@ -10,17 +26,20 @@ export async function handleProductCreated(product) {
 export async function handleProductUpdated(product) {
   console.log(`\n♻️  Mise à jour : "${product.title}" (id: ${product.id})`);
 
+  // Anti-boucle
   if (isOnCooldown(product.id)) {
     console.log(`🔄 Cooldown actif — ignoré (mise à jour effectuée par le bot)`);
     return;
   }
 
+  // Doit être publié
   const isPublished = product.published_at !== null && product.published_at !== undefined;
   if (!isPublished) {
     console.log(`⏭️  Produit non publié — SEO non généré.`);
     return;
   }
 
+  // Description déjà présente : vérifie juste les nouvelles photos
   if (product.body_html && product.body_html.trim() !== "") {
     console.log(`⏭️  Description déjà présente — vérification des nouvelles photos...`);
     const hasNewImages = product.images?.some((img) => {
@@ -36,11 +55,13 @@ export async function handleProductUpdated(product) {
     return;
   }
 
+  // Pas d'image
   if (!product.images || product.images.length === 0) {
     console.log(`⏭️  Aucune image — SEO non généré.`);
     return;
   }
 
+  // Déclenchement complet
   console.log(`✅ Déclenchement SEO : produit publié, description vide, ${product.images.length} photo(s).`);
   setCooldown(product.id);
   await processProduct(product);
